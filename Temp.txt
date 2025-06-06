@@ -1,0 +1,77 @@
+import os
+import xml.etree.ElementTree as ET
+from difflib import unified_diff
+import pandas as pd
+
+# 🔁 Set your folder paths
+release_dir = "H:/Commit/release_folder"  # Change to your actual release folder
+local_dir = "H:/Commit/local_folder"      # Change to your actual local formatter folder
+
+results = []
+
+# 🔧 Robust file reader with fallback encodings
+def read_file_lines(filepath):
+    encodings = ['utf-8', 'utf-16', 'latin-1']
+    for enc in encodings:
+        try:
+            with open(filepath, 'r', encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"Unable to decode file: {filepath}")
+
+# 🧠 Extract formatter name if it's a valid Import/Export Format
+def extract_name_if_formatter(xml_path):
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        component = root.find(".//ObjectType")
+        if component is not None and "Import/Export Format" in component.attrib.get("ComponentName", ""):
+            name_tag = root.find(".//Row/Name")
+            return name_tag.text.strip() if name_tag is not None else None
+    except:
+        return None
+    return None
+
+# 📊 Line-by-line comparison
+def compare_xmls(local_path, release_path):
+    local_lines = read_file_lines(local_path)
+    release_lines = read_file_lines(release_path)
+    return list(unified_diff(local_lines, release_lines, fromfile='local', tofile='release'))
+
+# 🔄 Walk through release folder
+for root, _, files in os.walk(release_dir):
+    for file in files:
+        if file.endswith(".xml"):
+            release_xml_path = os.path.join(root, file)
+            name = extract_name_if_formatter(release_xml_path)
+
+            if name:
+                local_xml_path = os.path.join(local_dir, f"{name}.xml")
+
+                if os.path.exists(local_xml_path):
+                    # Compare local vs release
+                    diffs = compare_xmls(local_xml_path, release_xml_path)
+                    if diffs:
+                        for line in diffs:
+                            results.append({
+                                "Formatter Name": name,
+                                "Release XML Path": release_xml_path,
+                                "Status": "Changed",
+                                "Change": line.strip()
+                            })
+                else:
+                    # Local file doesn't exist
+                    results.append({
+                        "Formatter Name": name,
+                        "Release XML Path": release_xml_path,
+                        "Status": "Missing in Local",
+                        "Change": "N/A"
+                    })
+
+# 📁 Save results to Excel
+df = pd.DataFrame(results)
+output_path = "H:/Commit/formatter_release_diff_summary.xlsx"
+df.to_excel(output_path, index=False)
+
+print(f"✅ Done! Excel saved to: {output_path}")
