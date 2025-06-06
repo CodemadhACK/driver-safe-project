@@ -3,13 +3,12 @@ import xml.etree.ElementTree as ET
 from difflib import unified_diff
 import pandas as pd
 
-# 🔁 Set your folder paths
-release_dir = "H:/Commit/release_folder"  # Change to your actual release folder
-local_dir = "H:/Commit/local_folder"      # Change to your actual local formatter folder
+# 🔁 Update with your folder paths
+release_dir = "H:/Commit/release_folder"
+local_dir = "H:/Commit/local_folder"
 
 results = []
 
-# 🔧 Robust file reader with fallback encodings
 def read_file_lines(filepath):
     encodings = ['utf-8', 'utf-16', 'latin-1']
     for enc in encodings:
@@ -20,7 +19,6 @@ def read_file_lines(filepath):
             continue
     raise ValueError(f"Unable to decode file: {filepath}")
 
-# 🧠 Extract formatter name if it's a valid Import/Export Format
 def extract_name_if_formatter(xml_path):
     try:
         tree = ET.parse(xml_path)
@@ -33,13 +31,32 @@ def extract_name_if_formatter(xml_path):
         return None
     return None
 
-# 📊 Line-by-line comparison
-def compare_xmls(local_path, release_path):
+def compare_xmls_with_line_numbers(local_path, release_path):
     local_lines = read_file_lines(local_path)
     release_lines = read_file_lines(release_path)
-    return list(unified_diff(local_lines, release_lines, fromfile='local', tofile='release'))
 
-# 🔄 Walk through release folder
+    diff = list(unified_diff(local_lines, release_lines, fromfile='local', tofile='release', n=0))
+
+    results = []
+    rel_line_num = 0
+    for line in diff:
+        if line.startswith("@@"):
+            # Extract starting line number for release file (after +)
+            parts = line.split()
+            for part in parts:
+                if part.startswith('+'):
+                    try:
+                        rel_line_num = int(part[1:].split(',')[0]) - 1  # line index adjustment
+                    except:
+                        rel_line_num = 0
+        elif line.startswith("+") and not line.startswith("+++"):
+            results.append((rel_line_num + 1, "Added", line.strip()))
+            rel_line_num += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            results.append((None, "Removed", line.strip()))
+    return results
+
+# Loop through release XMLs
 for root, _, files in os.walk(release_dir):
     for file in files:
         if file.endswith(".xml"):
@@ -50,28 +67,29 @@ for root, _, files in os.walk(release_dir):
                 local_xml_path = os.path.join(local_dir, f"{name}.xml")
 
                 if os.path.exists(local_xml_path):
-                    # Compare local vs release
-                    diffs = compare_xmls(local_xml_path, release_xml_path)
-                    if diffs:
-                        for line in diffs:
+                    changes = compare_xmls_with_line_numbers(local_xml_path, release_xml_path)
+                    if changes:
+                        for line_num, change_type, content in changes:
                             results.append({
                                 "Formatter Name": name,
                                 "Release XML Path": release_xml_path,
                                 "Status": "Changed",
-                                "Change": line.strip()
+                                "Line Number": line_num if line_num is not None else "N/A",
+                                "Change Type": change_type,
+                                "Change": content
                             })
                 else:
-                    # Local file doesn't exist
                     results.append({
                         "Formatter Name": name,
                         "Release XML Path": release_xml_path,
                         "Status": "Missing in Local",
+                        "Line Number": "N/A",
+                        "Change Type": "N/A",
                         "Change": "N/A"
                     })
 
-# 📁 Save results to Excel
+# Export to Excel
 df = pd.DataFrame(results)
-output_path = "H:/Commit/formatter_release_diff_summary.xlsx"
+output_path = "H:/Commit/formatter_release_diff_with_lines.xlsx"
 df.to_excel(output_path, index=False)
-
-print(f"✅ Done! Excel saved to: {output_path}")
+print(f"✅ Excel with line numbers saved to: {output_path}")
