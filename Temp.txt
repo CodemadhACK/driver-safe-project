@@ -1,0 +1,153 @@
+import os
+import xml.etree.ElementTree as ET
+from difflib import unified_diff
+import pandas as pd
+from multiprocessing import Pool, cpu_count
+from functools import partial
+from tqdm import tqdm
+
+# ✅ Paths
+release_dir = "H:/Commit/release_folder"
+local_dir = "H:/Commit/local_folder"
+output_path = "H:/Commit/formatter_full_comparison.xlsx"
+
+# 🧠 Helpers
+def read_file_lines(path):
+    for enc in ['utf-8', 'utf-16', 'latin-1']:
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"Can't decode: {path}")
+
+def extract_name_if_formatter(xml_path):
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        obj = root.find(".//ObjectType")
+        if obj is not None and "Import/Export Format" in obj.attrib.get("ComponentName", ""):
+            name = root.find(".//Row/Name")
+            return (name.text.strip(), xml_path) if name is not None else None
+    except:
+        return None
+
+def compare_xmls(name, local_path, release_path):
+    try:
+        local_lines = read_file_lines(local_path)
+        release_lines = read_file_lines(release_path)
+        diffs = list(unified_diff(local_lines, release_lines, fromfile='local', tofile='release', n=0))
+
+        changes = []
+        rel_line = 0
+        for line in diffs:
+            if line.startswith("@@"):
+                try:
+                    rel_line = int(line.split()[2][1:].split(',')[0])
+                except:
+                    rel_line = 0
+            elif line.startswith('+') and not line.startswith('+++'):
+                changes.append((rel_line, "Added", line.strip()))
+                rel_line += 1
+            elif line.startswith('-') and not line.startswith('---'):
+                changes.append((None, "Removed", line.strip()))
+        return [{
+            "Formatter Name": name,
+            "Release XML Path": release_path,
+            "Status": "Changed",
+            "Line Number": line_num or "N/A",
+            "Change Type": change_type,
+            "Change": line
+        } for line_num, change_type, line in changes]
+    except Exception as e:
+        return [{
+            "Formatter Name": name,
+            "Release XML Path": release_path,
+            "Status": f"Error: {str(e)}",
+            "Line Number": "N/A",
+            "Change Type": "N/A",
+            "Change": "N/A"
+        }]
+
+def process_release_xml(xml_path, local_dict):
+    result = []
+    extracted = extract_name_if_formatter(xml_path)
+    if not extracted:
+        return result
+    name, release_path = extracted
+    if name in local_dict:
+        local_path = local_dict[name]
+        changes = compare_xmls(name, local_path, release_path)
+        result.extend(changes)
+    else:
+        result.append({
+            "Formatter Name": name,
+            "Release XML Path": release_path,
+            "Status": "Missing in Local",
+            "Line Number": "N/A",
+            "Change Type": "N/A",
+            "Change": "N/A"
+        })
+    return result
+
+# 📦 Step 1: Build Local Formatter Map
+def collect_local_formatters():
+    local_map = {}
+    for root, _, files in os.walk(local_dir):
+        for file in files:
+            if file.endswith(".xml"):
+                full_path = os.path.join(root, file)
+                extracted = extract_name_if_formatter(full_path)
+                if extracted:
+                    name, path = extracted
+                    local_map[name] = path
+    return local_map
+
+# 📦 Step 2: Gather Release XMLs from folders containing 'xml'
+def collect_release_xmls():
+    release_xmls = []
+    for folder in os.listdir(release_dir):
+        folder_path = os.path.join(release_dir, folder)
+        if os.path.isdir(folder_path) and 'xml' in folder.lower():
+            for root, _, files in os.walk(folder_path):
+                for file in files:
+                    if file.endswith(".xml"):
+                        release_xmls.append(os.path.join(root, file))
+    return release_xmls
+
+# 🚀 Main Execution
+if __name__ == '__main__':
+    local_dict = collect_local_formatters()
+    release_xmls = collect_release_xmls()
+    print(f"🧠 Total Local Formatters: {len(local_dict)}")
+    print(f"🧠 Total Release XMLs: {len(release_xmls)}")
+
+    all_results = []
+    with Pool(cpu_count()) as pool:
+        compare_fn = partial(process_release_xml, local_dict=local_dict)
+        with tqdm(total=len(release_xmls), desc="🔍 Comparing XMLs", unit="file", dynamic_ncols=True, smoothing=0.3) as pbar:
+            for result in pool.imap_unordered(compare_fn, release_xmls):
+                all_results.extend(result)
+                pbar.update()
+
+    # 🧾 Step 3: Detect Missing in Release
+    release_names = set(
+        extract_name_if_formatter(path)[0]
+        for path in release_xmls
+        if extract_name_if_formatter(path)
+    )
+    for name, path in local_dict.items():
+        if name not in release_names:
+            all_results.append({
+                "Formatter Name": name,
+                "Release XML Path": "N/A",
+                "Status": "Missing in Release",
+                "Line Number": "N/A",
+                "Change Type": "N/A",
+                "Change": "N/A"
+            })
+
+    # 📤 Final Excel Export
+    df = pd.DataFrame(all_results)
+    df.to_excel(output_path, index=False)
+    print(f"\n✅ Done! Excel saved to: {output_path}")
